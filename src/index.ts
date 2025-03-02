@@ -14,6 +14,12 @@ const options = commandLineArgs(optionDefinitions);
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
 
+  // Is it possible to get more images?  
+  await page.setViewport({
+    width: 1080,
+    height: 1024,
+    deviceScaleFactor: 1,
+  });
 
   try {
     await page.goto(`https://ru.pinterest.com/search/pins/?q=${options.query.join(" ")}`, {'waitUntil':'networkidle0'});
@@ -25,6 +31,10 @@ const options = commandLineArgs(optionDefinitions);
       const resultSelectorArray = Array.from(resultSelector);
       return resultSelectorArray.map((img: HTMLImageElement) => img.src);
     });
+
+    if (!data.length) {
+      throw new Error("Не найдено ни одной ссылки, папка не будет создана.");
+    }
 
   const folderPath = await createFolderInPublic(`${options.query.join("-")}`);
 
