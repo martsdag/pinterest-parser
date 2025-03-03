@@ -5,16 +5,17 @@ import { ofetch } from 'ofetch';
 import { promises as fs } from 'fs';
 import { createFolderInPublic } from '@/folderCreator';
 
-const optionDefinitions = [{name:'query', alias: 'q', type: String, multiple: true }];
-
+const optionDefinitions = [{ name: 'query', alias: 'q', type: String, multiple: true }];
 const options = commandLineArgs(optionDefinitions);
 
-(async () => {
+const waitFor = (ms: number) => {
+  return new Promise (resolve => setTimeout(resolve, ms))
+};
 
-  const browser = await puppeteer.launch();
+(async () => {
+  const browser = await puppeteer.launch({ headless: false });
   const page = await browser.newPage();
 
-  // Is it possible to get more images?  
   await page.setViewport({
     width: 1080,
     height: 1024,
@@ -22,38 +23,55 @@ const options = commandLineArgs(optionDefinitions);
   });
 
   try {
-    await page.goto(`https://ru.pinterest.com/search/pins/?q=${options.query.join(" ")}`, {'waitUntil':'networkidle0'});
-    
-    const data = await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
+    await page.goto(`https://ru.pinterest.com/search/pins/?q=${options.query.join(" ")}`, { waitUntil: 'networkidle2' });
 
-      const resultSelector: NodeListOf<HTMLImageElement> = document.querySelectorAll('a[href^="/pin"] img:not([src^="https://i.pinimg.com/videos"])');
-      const resultSelectorArray = Array.from(resultSelector);
-      return resultSelectorArray.map((img: HTMLImageElement) => img.src);
-    });
+    let imageUrls: Set<string> = new Set();
+    const maxScrollAttempts = 10;
+    const scrollDelay = 2000;
 
-    if (!data.length) {
+    for (let i = 0; i < maxScrollAttempts; i++) {
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+
+      await waitFor(scrollDelay);
+
+      const newImages = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('a[href^="/pin"] img:not([src^="https://i.pinimg.com/videos"])'))
+          .map((img) => (img as HTMLImageElement).src)
+      );
+
+      const previousSize = imageUrls.size;
+
+      newImages.forEach((img) => imageUrls.add(img));
+
+      if (imageUrls.size === previousSize) {
+        break;
+      }
+
+    }
+
+    if (imageUrls.size === 0) {
       throw new Error("Не найдено ни одной ссылки, папка не будет создана.");
     }
 
-  const folderPath = await createFolderInPublic(`${options.query.join("-")}`);
+    const folderPath = await createFolderInPublic(`${options.query.join("-")}`);
 
-  const downloadImageToOwnFolder = async (url: string) => {
-      const response = await ofetch(url, { responseType: 'arrayBuffer' });
-      const buffer = Buffer.from(response);
+    for await (const url of imageUrls) {
 
-      const filename = path.basename(url.split('?')[0]);
+      try {
+        const response = await ofetch(url, { responseType: 'arrayBuffer' });
+        const buffer = Buffer.from(response);
+        const filename = path.basename(url.split('?')[0]);
 
-      await fs.writeFile(path.join(folderPath, filename), buffer);
-  }
+        await fs.writeFile(path.join(folderPath, filename), buffer);
 
-  const downloadImages = data.map(async (url) => {
-   await downloadImageToOwnFolder(url);
-});
+      } catch (err) {
+        console.error(`Ошибка загрузки: ${url}`, err);
+      }
+    }
 
-    await Promise.all(downloadImages);
-
-    console.log('Ссылки:', data, data.length);
+    console.log('Скачано изображений:', imageUrls.size);
 
   } catch (error) {
     console.error('Ошибка:', error);
